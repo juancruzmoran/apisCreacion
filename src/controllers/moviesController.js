@@ -1,9 +1,9 @@
 const path = require('path');
 const db = require('../database/models');
 const sequelize = db.sequelize;
-const { Op } = require("sequelize");
+const { Op, ForeignKeyConstraintError } = require("sequelize");
 const moment = require('moment');
-
+const {createError,getUrl,getUrlBase}=require('../helpers')
 
 //Aqui tienen otra forma de llamar a cada uno de los modelos
 const Movies = db.Movie;
@@ -12,35 +12,197 @@ const Actors = db.Actor;
 
 
 const moviesController = {
-    'list': (req, res) => {
-        db.Movie.findAll({
-            include: ['genre']
-        })
-            .then(movies => {
-                res.render('moviesList.ejs', {movies})
+    list: async(req, res) => {
+
+    const{limit,order,offset}=req.query
+
+    let fields=['title','rating','release_date','length','awards']
+        try{
+
+            if(order && !fields.includes(order)){
+                throw createError(400,`Solo se puede ordenar por los campos ${fields.join(', ')}`)
+            }
+
+            let total= await db.Movie.count()
+
+            let movies=await db.Movie.findAll({
+                attributes:{
+                    exclude:['created_at', 'updated_at'] 
+                },
+                include:[{
+                    association:'genre',
+                    attributes:{
+                        exclude:['created_at', 'updated_at'] },},
+                    {
+                   association:'actors',
+                   attributes:{
+                    exclude:['created_at', 'updated_at']  
+                    },
+                }
+                ],
+                limit:limit? +limit:5,
+                offset:offset? +offset:0,
+                order:[order? order:'id']
             })
+
+            movies.forEach(movie=>{
+                movie.setDataValue('link',`${getUrl(req)}/${movie.id}`)
+            })
+
+            return res.status(200).json({
+                ok:true,
+                meta:{
+                    
+                    status:200
+                    
+                },
+                data:{
+                    items:movies.length,
+                    total,
+                    movies,
+                }
+            })
+        }
+        catch(error){
+            console.log(error)
+            return res.status(error.status || 500).json({
+                ok:false,
+                status:error.status || 500,
+                msg:error.message
+            })
+        }
+
+
+       
     },
-    'detail': (req, res) => {
-        db.Movie.findByPk(req.params.id,
+    getById: async (req, res) => {
+       
+        const{id}=req.params
+
+       try{
+
+        if(isNaN(id)){
+
+            throw createError(400,'El ID debe ser un numero')
+            }
+
+        const movie = await db.Movie.findByPk(req.params.id,
             {
-                include : ['genre']
-            })
-            .then(movie => {
-                res.render('moviesDetail.ejs', {movie});
-            });
-    },
-    'new': (req, res) => {
-        db.Movie.findAll({
-            order : [
-                ['release_date', 'DESC']
+                include : [
+                    {
+                    association:'genre',
+                    attributes:{
+                        exclude:['created_at','update_at']
+                }
+            },
+           { association:'actors',
+            attributes:{
+             exclude:['created_at', 'updated_at']  
+             },
+            }
             ],
-            limit: 5
+                attributes:{
+                    exclude:['created_at','update_at','genre_id']
+                }
+            })
+
+            if(!movie){
+                throw createError(404,'No existe una pelicula con ese ID')
+            }
+
+            movie.release_date=moment(movie.release_date).format('DD-MM-YYYY')
+
+            console.log(getUrl(req.originalUrl))
+            
+
+            return res.status(200).json({
+                ok:true,
+                meta:{
+                    
+                    status:200
+                    
+                },
+                data:{
+            
+                    movie,
+                }
+            })
+
+       }catch(error){
+        console.log(error)
+        return res.status(error.status || 500).json({
+            ok:false,
+            status:error.status || 500,
+            msg:error.message
         })
-            .then(movies => {
-                res.render('newestMovies', {movies});
-            });
+       }
+            
     },
-    'recomended': (req, res) => {
+    newest: async (req, res) => {
+
+        const{limit}=req.query
+
+        const options={ 
+            include:[
+                {
+            association:'genre',
+            attributes:{
+                exclude:['created_at', 'updated_at'] 
+            }
+            },
+            {
+           association:'actors',
+           attributes:{
+            exclude:['created_at', 'updated_at']  
+            },
+        }
+    ],
+    attributes:{
+        exclude:['created_at', 'updated_at','genre_id']  
+            
+        },
+        limit:limit? +limit:5,
+        order:[['release_date','DESC']]
+        }
+
+    
+
+
+        try{
+            const movies= await db.Movie.findAll(options)
+          
+           const moviesModify=movies.map(movie=>{
+            return{
+                ...movie.dataValues,
+                link:`${getUrlBase(req)}/${movie.id}`
+            }
+           })
+          
+            return res.status(200).json({
+                ok:true,
+                meta:{
+                    
+                    status:200
+                    
+                },
+                data:{
+                    
+                    movies:moviesModify,
+                }
+            })
+
+        }catch(error){
+
+            console.log(error)
+            return res.status(error.status || 500).json({
+                ok:false,
+                status:error.status || 500,
+                msg:error.message
+            })
+        }
+           
+    },
+    recomended: (req, res) => {
         db.Movie.findAll({
             include: ['genre'],
             where: {
@@ -54,80 +216,125 @@ const moviesController = {
                 res.render('recommendedMovies.ejs', {movies});
             });
     },
-    //Aqui dispongo las rutas para trabajar con el CRUD
-    add: function (req, res) {
-        let promGenres = Genres.findAll();
-        let promActors = Actors.findAll();
+    create: async (req,res)=> {
         
-        Promise
-        .all([promGenres, promActors])
-        .then(([allGenres, allActors]) => {
-            return res.render(path.resolve(__dirname, '..', 'views',  'moviesAdd'), {allGenres,allActors})})
-        .catch(error => res.send(error))
+        const {title,rating,awards,release_date,length,genre_id}=req.body
+        
+        try{
+
+            const movie=await db.Movie.create({
+                title: title?.trim(),
+                rating,
+                awards,
+                release_date,
+                length,
+                genre_id
+            })
+
+            return res.status(201).json({
+                ok:true,
+                meta:{
+                    
+                    status:201
+                    
+                },
+                data:{
+                    
+                    movie
+                }
+            })
+        }catch(error){
+            console.log(error)
+            return res.status(error.status || 500).json({
+                ok:false,
+                status:error.status || 500,
+                msg:error.message
+            })
+        }
+
+            
+
     },
-    create: function (req,res) {
-        Movies
-        .create(
-            {
-                title: req.body.title,
-                rating: req.body.rating,
-                awards: req.body.awards,
-                release_date: req.body.release_date,
-                length: req.body.length,
-                genre_id: req.body.genre_id
-            }
-        )
-        .then(()=> {
-            return res.redirect('/movies')})            
-        .catch(error => res.send(error))
-    },
-    edit: function(req,res) {
+    update: async (req,res)=> {
+const{title,rating,awards,release_date,length,genre_id}=req.body
+
+        try{
+            
         let movieId = req.params.id;
-        let promMovies = Movies.findByPk(movieId,{include: ['genre','actors']});
-        let promGenres = Genres.findAll();
-        let promActors = Actors.findAll();
-        Promise
-        .all([promMovies, promGenres, promActors])
-        .then(([Movie, allGenres, allActors]) => {
-            Movie.release_date = moment(Movie.release_date).format('L');
-            return res.render(path.resolve(__dirname, '..', 'views',  'moviesEdit'), {Movie,allGenres,allActors})})
-        .catch(error => res.send(error))
-    },
-    update: function (req,res) {
-        let movieId = req.params.id;
-        Movies
-        .update(
+    
+        let movie= await db.Movie.update(
             {
-                title: req.body.title,
-                rating: req.body.rating,
-                awards: req.body.awards,
-                release_date: req.body.release_date,
-                length: req.body.length,
-                genre_id: req.body.genre_id
+                title:title?.trim(),
+                rating,
+                awards,
+                release_date,
+                length,
+                genre_id
             },
             {
                 where: {id: movieId}
             })
-        .then(()=> {
-            return res.redirect('/movies')})            
-        .catch(error => res.send(error))
+
+            return res.status(200).json({
+                ok:true,
+                meta:{
+                    
+                    status:200
+                    
+                },
+               msg:'Pelicula actualizada'
+            })
+        }catch(error){
+            console.log(error)
+            return res.status(error.status || 500).json({
+                ok:false,
+                status:error.status || 500,
+                msg:error.message
+            })
+        }
     },
-    delete: function (req,res) {
+    destroy: async (req,res)=>{
+        try{
         let movieId = req.params.id;
-        Movies
-        .findByPk(movieId)
-        .then(Movie => {
-            return res.render(path.resolve(__dirname, '..', 'views',  'moviesDelete'), {Movie})})
-        .catch(error => res.send(error))
-    },
-    destroy: function (req,res) {
-        let movieId = req.params.id;
-        Movies
-        .destroy({where: {id: movieId}, force: true}) // force: true es para asegurar que se ejecute la acción
-        .then(()=>{
-            return res.redirect('/movies')})
-        .catch(error => res.send(error)) 
-    }
+
+        await db.Actor.update({
+            favorite_movie_id:null
+        },{
+            where:{
+                favorite_movie_id:movieId
+            }
+        })
+        await db.ActorMovie.destroy({
+            where:{
+                movie_id:movieId
+            }
+        })
+
+    await db.Movie.destroy({
+        where:{
+            id:movieId
+        },
+        force:true
+    })
+
+    return res.status(200).json({
+        ok:true,
+        meta:{
+            
+            status:200
+            
+        },
+       msg:'Pelicula eliminada!'
+    })
+
+}catch(error){
+        console.log(error)
+        return res.status(error.status || 500).json({
+            ok:false,
+            status:error.status || 500,
+            msg:error.message || 'ha ocurrido un error!'
+        })
+    }}
 }
 
 module.exports = moviesController;
