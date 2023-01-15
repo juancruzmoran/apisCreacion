@@ -25,9 +25,10 @@ app.use(express.urlencoded({ extended: false }));
 app.use(methodOverride('_method'));
 
 app.use('/', indexRouter);
-app.use(moviesRoutes);
-app.use(genresRoutes);
+app.use('/movies',moviesRoutes);
+app.use('/genres',genresRoutes);
 
+app.use('*',(req,res)=>res.status(404).json({msg:'ruta no encontrada:('}))
 
 //Activando el servidor desde express
 app.listen('3001', () => console.log('Servidor corriendo en el puerto 3001'));
